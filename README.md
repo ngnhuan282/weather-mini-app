@@ -1,4 +1,4 @@
-# 🌤️ Weather Forecast App (BTQT02)
+# 🌤️ Weather Forecast App
 
 An Android weather forecast application that provides real-time weather information and forecasts based on the user's current location.
 
