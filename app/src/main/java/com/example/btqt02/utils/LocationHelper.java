@@ -16,6 +16,7 @@ public class LocationHelper {
 
     public interface OnLocationResultListener {
         void onResult(double lat, double lon);
+
         void onFailure(String message);
     }
 

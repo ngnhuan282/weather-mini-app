@@ -19,9 +19,11 @@ import java.util.Locale;
 public class DailyAdapter extends RecyclerView.Adapter<DailyAdapter.ViewHolder> {
     private List<DailyWeather> dailyList;
     private Context context;
+    private final String unitSymbol;
 
-    public DailyAdapter(List<DailyWeather> dailyList) {
+    public DailyAdapter(List<DailyWeather> dailyList, String unitSymbol) {
         this.dailyList = dailyList;
+        this.unitSymbol = unitSymbol;
     }
 
     @NonNull
@@ -46,8 +48,8 @@ public class DailyAdapter extends RecyclerView.Adapter<DailyAdapter.ViewHolder> 
         holder.tvRainChance.setText(rainPercent + "%");
 
         // Hiển thị nhiệt độ Max/Min
-        holder.tvMaxTemp.setText(Math.round(day.getTempRange().maxTemp) + "°");
-        holder.tvMinTemp.setText(Math.round(day.getTempRange().minTemp) + "°");
+        holder.tvMaxTemp.setText(Math.round(day.getTempRange().maxTemp) + unitSymbol);
+        holder.tvMinTemp.setText(Math.round(day.getTempRange().minTemp) + unitSymbol);
 
         // Load Icon
         String iconCode = day.getWeatherDescriptions().get(0).getIconCode();

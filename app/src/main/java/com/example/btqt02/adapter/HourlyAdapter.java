@@ -19,9 +19,11 @@ import java.util.Locale;
 public class HourlyAdapter extends RecyclerView.Adapter<HourlyAdapter.ViewHolder> {
     private List<HourlyWeather> hourlyList;
     private Context context;
+    private final String unitSymbol;
 
-    public HourlyAdapter(List<HourlyWeather> hourlyList) {
+    public HourlyAdapter(List<HourlyWeather> hourlyList, String unitSymbol) {
         this.hourlyList = hourlyList;
+        this.unitSymbol = unitSymbol;
     }
 
     @NonNull
@@ -42,7 +44,7 @@ public class HourlyAdapter extends RecyclerView.Adapter<HourlyAdapter.ViewHolder
         holder.tvTime.setText(position == 0 ? "Now" : time);
 
         // Hiển thị nhiệt độ
-        holder.tvTemp.setText(Math.round(weather.getTemperature()) + "°");
+        holder.tvTemp.setText(Math.round(weather.getTemperature()) + unitSymbol);
 
         // Load Icon bằng Glide
         String iconCode = weather.getWeatherDescriptions().get(0).getIconCode();

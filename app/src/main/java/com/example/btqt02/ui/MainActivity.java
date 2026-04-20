@@ -36,6 +36,9 @@ import com.example.btqt02.api.WeatherApiService;
 import com.example.btqt02.model.WeatherResponse;
 import com.example.btqt02.model.WeatherResponse.CurrentWeather;
 import com.example.btqt02.utils.LocationHelper;
+import com.example.btqt02.utils.NotificationUtils;
+import com.example.btqt02.utils.Prefs;
+import com.example.btqt02.utils.WeatherAlertScheduler;
 import com.google.android.material.bottomnavigation.BottomNavigationView;
 
 import java.io.IOException;
@@ -68,7 +71,6 @@ public class MainActivity extends AppCompatActivity {
 
     private static final int LOCATION_PERMISSION_REQUEST_CODE = 1000;
     private static final int NOTIFICATION_PERMISSION_REQUEST_CODE = 2002;
-    private static final String CHANNEL_ID = "weather_alerts";
     private static final int NOTIFICATION_ID = 1001;
 
     @Override
@@ -80,7 +82,10 @@ public class MainActivity extends AppCompatActivity {
         loadApiKey();
         initViews();
         setupNavigation();
-        createNotificationChannel();
+        NotificationUtils.ensureChannel(this);
+
+        // Keep background alerts in sync with user settings
+        WeatherAlertScheduler.syncWithPrefs(this);
 
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
             v.setPadding(insets.getInsets(WindowInsetsCompat.Type.systemBars()).left, 0, 0, 0);
@@ -89,23 +94,6 @@ public class MainActivity extends AppCompatActivity {
 
         locationHelper = new LocationHelper(this);
         checkLocationPermission();
-    }
-
-    // ================== TẠO NOTIFICATION CHANNEL ==================
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "Cảnh báo thời tiết",
-                    NotificationManager.IMPORTANCE_HIGH
-            );
-            channel.setDescription("Thông báo khi thời tiết xấu hoặc nhiệt độ cực đoan");
-            channel.enableVibration(true);
-            channel.enableLights(true);
-
-            NotificationManager notificationManager = getSystemService(NotificationManager.class);
-            notificationManager.createNotificationChannel(channel);
-        }
     }
 
     // ================== HIỂN THỊ THÔNG BÁO ==================
@@ -119,24 +107,7 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
         }
-
-        Intent intent = new Intent(this, MainActivity.class);
-        intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, intent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_warning)
-                .setContentTitle(title)
-                .setContentText(message)
-                .setStyle(new NotificationCompat.BigTextStyle().bigText(message))
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setVibrate(new long[]{0, 500, 200, 500})
-                .setAutoCancel(true)
-                .setContentIntent(pendingIntent);
-
-        NotificationManagerCompat notificationManager = NotificationManagerCompat.from(this);
-        notificationManager.notify(NOTIFICATION_ID, builder.build());
+        NotificationUtils.notifyWeatherAlert(this, title, message, NOTIFICATION_ID);
     }
 
     private void loadApiKey() {
@@ -194,7 +165,7 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "Tính năng thông báo đang phát triển", Toast.LENGTH_SHORT).show();
                 return true;
             } else if (itemId == R.id.nav_settings) {
-                Toast.makeText(this, "Tính năng cài đặt đang phát triển", Toast.LENGTH_SHORT).show();
+                startActivity(new Intent(MainActivity.this, SettingsActivity.class));
                 return true;
             }
             return false;
@@ -218,6 +189,7 @@ public class MainActivity extends AppCompatActivity {
             public void onResult(double lat, double lon) {
                 currentLat = lat;     // Lưu vị trí thực tế
                 currentLon = lon;
+                Prefs.setLastLocation(MainActivity.this, lat, lon);
                 updateCityName(lat, lon);
                 fetchWeatherData(lat, lon);
             }
@@ -249,7 +221,8 @@ public class MainActivity extends AppCompatActivity {
         if (API_KEY == null || API_KEY.isEmpty()) return;
 
         WeatherApiService apiService = RetrofitClient.getApiService();
-        apiService.getFullWeather(lat, lon, "minutely", API_KEY, "metric")
+        String units = Prefs.getUnits(this);
+        apiService.getFullWeather(lat, lon, "minutely", API_KEY, units)
                 .enqueue(new Callback<WeatherResponse>() {
                     @Override
                     public void onResponse(Call<WeatherResponse> call, Response<WeatherResponse> response) {
@@ -268,7 +241,10 @@ public class MainActivity extends AppCompatActivity {
     private void updateUI(WeatherResponse weather) {
         CurrentWeather current = weather.getCurrent();
 
-        tvTemperature.setText(Math.round(current.getTemp()) + "°C");
+        String units = Prefs.getUnits(this);
+        boolean imperial = Prefs.UNITS_IMPERIAL.equals(units);
+
+        tvTemperature.setText(Math.round(current.getTemp()) + (imperial ? "°F" : "°C"));
         tvCondition.setText(current.getWeather().get(0).getMainStatus());
 
         tvStatHumidityTitle.setText("HUMIDITY");
@@ -276,31 +252,42 @@ public class MainActivity extends AppCompatActivity {
         ivStatHumidity.setImageResource(R.drawable.ic_humidity);
 
         tvStatWindTitle.setText("WIND");
-        double windKmh = current.getWindSpeed() * 3.6;
-        tvStatWindValue.setText(Math.round(windKmh) + " km/h");
+        if (imperial) {
+            tvStatWindValue.setText(Math.round(current.getWindSpeed()) + " mph");
+        } else {
+            double windKmh = current.getWindSpeed() * 3.6;
+            tvStatWindValue.setText(Math.round(windKmh) + " km/h");
+        }
         ivStatWind.setImageResource(R.drawable.ic_wind);
 
         tvStatFeelsTitle.setText("FEELS LIKE");
-        tvStatFeelsValue.setText(Math.round(current.getFeelsLike()) + "°C");
+        tvStatFeelsValue.setText(Math.round(current.getFeelsLike()) + (imperial ? "°F" : "°C"));
         ivStatFeels.setImageResource(R.drawable.ic_temperature);
 
-        rvHourly.setAdapter(new HourlyAdapter(weather.getHourlyForecast()));
-        rvDaily.setAdapter(new DailyAdapter(weather.getDailyForecast()));
+        String unitSymbol = imperial ? "°F" : "°C";
+        rvHourly.setAdapter(new HourlyAdapter(weather.getHourlyForecast(), unitSymbol));
+        rvDaily.setAdapter(new DailyAdapter(weather.getDailyForecast(), unitSymbol));
 
         checkAndSendWeatherAlert(current);
     }
 
     private void checkAndSendWeatherAlert(CurrentWeather current) {
-        double temp = current.getTemp();
+        String units = Prefs.getUnits(this);
+        boolean imperial = Prefs.UNITS_IMPERIAL.equals(units);
+
+        double tempValue = current.getTemp();
+        double tempC = imperial ? (tempValue - 32.0) * 5.0 / 9.0 : tempValue;
         String mainCondition = current.getWeather().get(0).getMainStatus().toLowerCase();
         String description = current.getWeather().get(0).getDescription().toLowerCase();
 
-        if (temp > 35) {
+        String tempLabel = Math.round(tempValue) + (imperial ? "°F" : "°C");
+
+        if (tempC > 35) {
             showWeatherNotification("⚠️ Cảnh báo nóng bức!",
-                    "Nhiệt độ hiện tại: " + Math.round(temp) + "°C.\nHãy ở trong nhà và uống nhiều nước!");
-        } else if (temp < 12) {
+                "Nhiệt độ hiện tại: " + tempLabel + ".\nHãy ở trong nhà và uống nhiều nước!");
+        } else if (tempC < 12) {
             showWeatherNotification("❄️ Cảnh báo trời lạnh!",
-                    "Nhiệt độ hiện tại: " + Math.round(temp) + "°C.\nNhớ mặc ấm khi ra ngoài!");
+                "Nhiệt độ hiện tại: " + tempLabel + ".\nNhớ mặc ấm khi ra ngoài!");
         } else if (mainCondition.contains("rain") || mainCondition.contains("thunderstorm") ||
                 mainCondition.contains("storm") || mainCondition.contains("snow") ||
                 description.contains("heavy rain") || description.contains("shower") ||
@@ -315,6 +302,9 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         bottomNav.setSelectedItemId(R.id.nav_home);
+
+        // Refresh UI when user changes units in Settings
+        fetchWeatherData(currentLat, currentLon);
     }
 
     @Override
