@@ -2,10 +2,7 @@ package com.example.btqt02.ui;
 
 import android.os.Bundle;
 import android.widget.TextView;
-import android.widget.Toast;
-
 import androidx.appcompat.app.AppCompatActivity;
-
 import com.example.btqt02.BuildConfig;
 import com.example.btqt02.R;
 import com.google.android.gms.maps.CameraUpdateFactory;
@@ -18,20 +15,15 @@ import com.google.android.gms.maps.model.TileOverlay;
 import com.google.android.gms.maps.model.TileOverlayOptions;
 import com.google.android.gms.maps.model.TileProvider;
 import com.google.android.gms.maps.model.UrlTileProvider;
-
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.Locale;
 
 public class MapActivity extends AppCompatActivity implements OnMapReadyCallback {
-
     private GoogleMap mMap;
-    private TileOverlay currentTileOverlay;
+    private TileOverlay currentOverlay;
+    private double lat, lon;
     private TextView tvMapLabel;
-
-    private final String OWM_API_KEY = BuildConfig.WEATHER_API_KEY;
-
-    private double currentLat = 10.7583;
-    private double currentLon = 106.6806;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -39,72 +31,52 @@ public class MapActivity extends AppCompatActivity implements OnMapReadyCallback
         setContentView(R.layout.activity_map);
 
         tvMapLabel = findViewById(R.id.tvMapLabel);
+        lat = getIntent().getDoubleExtra("lat", 10.7583);
+        lon = getIntent().getDoubleExtra("lon", 106.6806);
 
-        // Nhận tọa độ thực tế từ MainActivity
-        if (getIntent() != null) {
-            currentLat = getIntent().getDoubleExtra("lat", 10.7583);
-            currentLon = getIntent().getDoubleExtra("lon", 106.6806);
-        }
-
-        SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager()
-                .findFragmentById(R.id.map);
-
-        if (mapFragment != null) {
-            mapFragment.getMapAsync(this);
-        }
+        SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager().findFragmentById(R.id.map);
+        if (mapFragment != null) mapFragment.getMapAsync(this);
 
         findViewById(R.id.btnBack).setOnClickListener(v -> finish());
 
-        findViewById(R.id.btnTemp).setOnClickListener(v -> updateWeatherLayer("temp_new", "Bản đồ Nhiệt độ"));
-        findViewById(R.id.btnClouds).setOnClickListener(v -> updateWeatherLayer("clouds_new", "Bản đồ Mây che phủ"));
-        findViewById(R.id.btnRain).setOnClickListener(v -> updateWeatherLayer("precipitation_new", "Bản đồ Lượng mưa"));
+        // LINK CÁC NÚT BẤM
+        findViewById(R.id.btnTemp).setOnClickListener(v -> updateLayer("temp", "Nhiệt độ"));
+        findViewById(R.id.btnClouds).setOnClickListener(v -> updateLayer("clouds", "Mây"));
+        findViewById(R.id.btnRain).setOnClickListener(v -> updateLayer("precipitation", "Lượng mưa"));
     }
 
     @Override
     public void onMapReady(GoogleMap googleMap) {
         mMap = googleMap;
-        mMap.getUiSettings().setZoomControlsEnabled(true);
-        mMap.getUiSettings().setCompassEnabled(true);
+        LatLng pos = new LatLng(lat, lon);
+        mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(pos, 10f));
+        mMap.addMarker(new MarkerOptions().position(pos).title("Vị trí đã chọn"));
 
-        LatLng userLocation = new LatLng(currentLat, currentLon);
-        mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(userLocation, 10.0f));
-
-        mMap.addMarker(new MarkerOptions()
-                .position(userLocation)
-                .title("Vị trí của bạn"));
-
-        updateWeatherLayer("temp_new", "Bản đồ Nhiệt độ");
+        updateLayer("temp", "Nhiệt độ"); // Mặc định hiện nhiệt độ
     }
 
-    private void updateWeatherLayer(String type, String label) {
+    private void updateLayer(String type, String label) {
         if (mMap == null) return;
 
-        if (currentTileOverlay != null) {
-            currentTileOverlay.remove();
+        // XÓA LỚP CŨ (Tránh lag và lỗi referer)[cite: 1]
+        if (currentOverlay != null) {
+            currentOverlay.remove();
         }
 
-        tvMapLabel.setText(label);
+        if (tvMapLabel != null) tvMapLabel.setText("Bản đồ " + label);
 
         TileProvider tileProvider = new UrlTileProvider(256, 256) {
             @Override
-            public URL getTileUrl(int x, int y, int zoom) {
-                String urlString = String.format(
-                        "https://tile.openweathermap.org/map/%s/%d/%d/%d.png?appid=%s",
-                        type, zoom, x, y, OWM_API_KEY);
-                try {
-                    return new URL(urlString);
-                } catch (MalformedURLException e) {
-                    return null;
-                }
+            public URL getTileUrl(int x, int y, int z) {
+                // SỬ DỤNG LAYER CHUẨN (Bỏ đuôi _new nếu dùng key Free
+                String url = String.format(Locale.US, "https://tile.openweathermap.org/map/%s/%d/%d/%d.png?appid=%s",
+                        type, z, x, y, BuildConfig.WEATHER_API_KEY);
+                try { return new URL(url); } catch (MalformedURLException e) { return null; }
             }
         };
 
-        float transparency = type.equals("precipitation_new") ? 0.78f : 0.65f;
-
-        currentTileOverlay = mMap.addTileOverlay(
-                new TileOverlayOptions()
-                        .tileProvider(tileProvider)
-                        .transparency(transparency)
-        );
+        currentOverlay = mMap.addTileOverlay(new TileOverlayOptions()
+                .tileProvider(tileProvider)
+                .transparency(0.3f));
     }
 }

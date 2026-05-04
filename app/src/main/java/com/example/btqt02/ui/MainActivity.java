@@ -1,36 +1,29 @@
 package com.example.btqt02.ui;
 
 import android.Manifest;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.location.Address;
 import android.location.Geocoder;
-import android.os.Build;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
-import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.SearchView;
 import androidx.core.app.ActivityCompat;
-import androidx.core.app.NotificationCompat;
-import androidx.core.app.NotificationManagerCompat;
-import androidx.core.content.ContextCompat;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.example.btqt02.R;
 import com.example.btqt02.adapter.DailyAdapter;
 import com.example.btqt02.adapter.HourlyAdapter;
+import com.example.btqt02.adapter.SuggestionAdapter;
 import com.example.btqt02.api.RetrofitClient;
 import com.example.btqt02.api.WeatherApiService;
 import com.example.btqt02.model.WeatherResponse;
@@ -39,9 +32,17 @@ import com.example.btqt02.utils.LocationHelper;
 import com.example.btqt02.utils.NotificationUtils;
 import com.example.btqt02.utils.Prefs;
 import com.example.btqt02.utils.WeatherAlertScheduler;
+import com.google.android.libraries.places.api.Places;
+import com.google.android.libraries.places.api.model.AutocompletePrediction;
+import com.google.android.libraries.places.api.model.Place;
+import com.google.android.libraries.places.api.net.FetchPlaceRequest;
+import com.google.android.libraries.places.api.net.FindAutocompletePredictionsRequest;
+import com.google.android.libraries.places.api.net.PlacesClient;
 import com.google.android.material.bottomnavigation.BottomNavigationView;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
@@ -51,26 +52,20 @@ import retrofit2.Response;
 
 public class MainActivity extends AppCompatActivity {
 
-    private RecyclerView rvHourly, rvDaily;
+    private RecyclerView rvHourly, rvDaily, rvSuggestions;
     private TextView tvTemperature, tvCity, tvCondition;
     private BottomNavigationView bottomNav;
+    private SearchView searchView;
+    private View layoutSuggestion;
+    private SuggestionAdapter suggestionAdapter;
+    private PlacesClient placesClient;
 
-    // Các thành phần trong 3 Card Stats
     private View cardHumidity, cardWind, cardFeelsLike;
-    private TextView tvStatHumidityTitle, tvStatHumidityValue;
-    private TextView tvStatWindTitle, tvStatWindValue;
-    private TextView tvStatFeelsTitle, tvStatFeelsValue;
-    private ImageView ivStatHumidity, ivStatWind, ivStatFeels;
+    private TextView tvStatHumidityValue, tvStatWindValue, tvStatFeelsValue;
 
     private LocationHelper locationHelper;
     private String API_KEY;
-
-    // Thêm 2 biến này để lưu vị trí hiện tại
-    private double currentLat = 10.7583;
-    private double currentLon = 106.6806;
-
-    private static final int LOCATION_PERMISSION_REQUEST_CODE = 1000;
-    private static final int NOTIFICATION_PERMISSION_REQUEST_CODE = 2002;
+    private double currentLat = 10.7583, currentLon = 106.6806;
     private static final int NOTIFICATION_ID = 1001;
 
     @Override
@@ -80,125 +75,141 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         loadApiKey();
+        initPlaces();
         initViews();
+        setupSearchLogic();
         setupNavigation();
-        NotificationUtils.ensureChannel(this);
 
-        // Keep background alerts in sync with user settings
+        NotificationUtils.ensureChannel(this);
         WeatherAlertScheduler.syncWithPrefs(this);
 
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
-            v.setPadding(insets.getInsets(WindowInsetsCompat.Type.systemBars()).left, 0, 0, 0);
-            return insets;
-        });
-
         locationHelper = new LocationHelper(this);
-        checkLocationPermission();
+
+        // Kiểm tra quyền và load dữ liệu lần đầu
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            getCurrentLocation();
+        } else {
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, 1000);
+        }
     }
 
-    // ================== HIỂN THỊ THÔNG BÁO ==================
-    private void showWeatherNotification(String title, String message) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this,
-                        new String[]{Manifest.permission.POST_NOTIFICATIONS},
-                        NOTIFICATION_PERMISSION_REQUEST_CODE);
-                return;
-            }
+    // --- TÍNH NĂNG CẬP NHẬT KHI QUAY LẠI TỪ SETTINGS ---
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Tự động fetch lại data với đơn vị mới (C hoặc F) khi quay lại màn hình chính
+        fetchWeatherData(currentLat, currentLon);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1000 && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            getCurrentLocation();
         }
-        NotificationUtils.notifyWeatherAlert(this, title, message, NOTIFICATION_ID);
     }
 
     private void loadApiKey() {
         try {
-            ApplicationInfo appInfo = getPackageManager()
-                    .getApplicationInfo(getPackageName(), PackageManager.GET_META_DATA);
+            ApplicationInfo appInfo = getPackageManager().getApplicationInfo(getPackageName(), PackageManager.GET_META_DATA);
             API_KEY = appInfo.metaData.getString("com.example.btqt02.WEATHER_API_KEY");
-        } catch (Exception e) {
-            Toast.makeText(this, "Lỗi nạp API Key!", Toast.LENGTH_SHORT).show();
-        }
+        } catch (Exception ignored) {}
+    }
+
+    private void initPlaces() {
+        if (!Places.isInitialized()) Places.initialize(getApplicationContext(), API_KEY);
+        placesClient = Places.createClient(this);
     }
 
     private void initViews() {
         rvHourly = findViewById(R.id.rvHourly);
         rvDaily = findViewById(R.id.rvDaily);
+        rvSuggestions = findViewById(R.id.rvSuggestions);
         tvTemperature = findViewById(R.id.tvTemperature);
         tvCity = findViewById(R.id.tvCity);
         tvCondition = findViewById(R.id.tvCondition);
         bottomNav = findViewById(R.id.bottomNav);
+        searchView = findViewById(R.id.searchView);
+        layoutSuggestion = findViewById(R.id.layoutSuggestion);
 
         rvHourly.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
         rvDaily.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.VERTICAL, false));
+        rvSuggestions.setLayoutManager(new LinearLayoutManager(this));
+
+        suggestionAdapter = new SuggestionAdapter(this::fetchPlaceDetails);
+        rvSuggestions.setAdapter(suggestionAdapter);
 
         cardHumidity = findViewById(R.id.cardHumidity);
-        tvStatHumidityTitle = cardHumidity.findViewById(R.id.tvStatTitle);
         tvStatHumidityValue = cardHumidity.findViewById(R.id.tvStatValue);
-        ivStatHumidity = cardHumidity.findViewById(R.id.ivStatIcon);
-
         cardWind = findViewById(R.id.cardWind);
-        tvStatWindTitle = cardWind.findViewById(R.id.tvStatTitle);
         tvStatWindValue = cardWind.findViewById(R.id.tvStatValue);
-        ivStatWind = cardWind.findViewById(R.id.ivStatIcon);
-
         cardFeelsLike = findViewById(R.id.cardFeelsLike);
-        tvStatFeelsTitle = cardFeelsLike.findViewById(R.id.tvStatTitle);
         tvStatFeelsValue = cardFeelsLike.findViewById(R.id.tvStatValue);
-        ivStatFeels = cardFeelsLike.findViewById(R.id.ivStatIcon);
     }
 
-    private void setupNavigation() {
-        bottomNav.setSelectedItemId(R.id.nav_home);
-        bottomNav.setOnItemSelectedListener(item -> {
-            int itemId = item.getItemId();
-            if (itemId == R.id.nav_home) {
-                getCurrentLocation();
-                return true;
-            } else if (itemId == R.id.nav_map) {
-                // Truyền tọa độ thực tế sang MapActivity
-                Intent intent = new Intent(MainActivity.this, MapActivity.class);
-                intent.putExtra("lat", currentLat);
-                intent.putExtra("lon", currentLon);
-                startActivity(intent);
-                return true;
-            } else if (itemId == R.id.nav_notifications) {
-                Toast.makeText(this, "Tính năng thông báo đang phát triển", Toast.LENGTH_SHORT).show();
-                return true;
-            } else if (itemId == R.id.nav_settings) {
-                startActivity(new Intent(MainActivity.this, SettingsActivity.class));
+    private void setupSearchLogic() {
+        searchView.setOnQueryTextFocusChangeListener((v, hasFocus) -> {
+            layoutSuggestion.setVisibility(hasFocus ? View.VISIBLE : View.GONE);
+        });
+
+        layoutSuggestion.setOnClickListener(v -> {
+            getCurrentLocation();
+            searchView.clearFocus();
+            rvSuggestions.setVisibility(View.GONE);
+        });
+
+        searchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
+            @Override
+            public boolean onQueryTextSubmit(String query) {
+                searchView.clearFocus();
                 return true;
             }
-            return false;
+            @Override
+            public boolean onQueryTextChange(String newText) {
+                if (newText.length() > 2) getSuggestions(newText);
+                else rvSuggestions.setVisibility(View.GONE);
+                return true;
+            }
         });
     }
 
-    private void checkLocationPermission() {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this,
-                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
-                    LOCATION_PERMISSION_REQUEST_CODE);
-        } else {
-            getCurrentLocation();
-        }
+    private void getSuggestions(String query) {
+        FindAutocompletePredictionsRequest request = FindAutocompletePredictionsRequest.builder()
+                .setCountry("VN").setQuery(query).build();
+        placesClient.findAutocompletePredictions(request).addOnSuccessListener(response -> {
+            suggestionAdapter.setSuggestions(response.getAutocompletePredictions());
+            rvSuggestions.setVisibility(View.VISIBLE);
+        });
+    }
+
+    private void fetchPlaceDetails(AutocompletePrediction prediction) {
+        List<Place.Field> fields = Arrays.asList(Place.Field.LAT_LNG, Place.Field.NAME);
+        FetchPlaceRequest request = FetchPlaceRequest.builder(prediction.getPlaceId(), fields).build();
+        placesClient.fetchPlace(request).addOnSuccessListener(response -> {
+            Place place = response.getPlace();
+            if (place.getLatLng() != null) {
+                currentLat = place.getLatLng().latitude;
+                currentLon = place.getLatLng().longitude;
+                tvCity.setText(place.getName());
+                fetchWeatherData(currentLat, currentLon);
+                Prefs.setLastLocation(this, currentLat, currentLon);
+                rvSuggestions.setVisibility(View.GONE);
+                searchView.clearFocus();
+            }
+        });
     }
 
     private void getCurrentLocation() {
         locationHelper.getLastLocation(new LocationHelper.OnLocationResultListener() {
             @Override
             public void onResult(double lat, double lon) {
-                currentLat = lat;     // Lưu vị trí thực tế
-                currentLon = lon;
+                currentLat = lat; currentLon = lon;
                 Prefs.setLastLocation(MainActivity.this, lat, lon);
                 updateCityName(lat, lon);
                 fetchWeatherData(lat, lon);
             }
-
             @Override
-            public void onFailure(String message) {
-                Toast.makeText(MainActivity.this, message, Toast.LENGTH_SHORT).show();
-                fetchWeatherData(currentLat, currentLon);
-            }
+            public void onFailure(String message) { fetchWeatherData(currentLat, currentLon); }
         });
     }
 
@@ -206,121 +217,71 @@ public class MainActivity extends AppCompatActivity {
         Geocoder geocoder = new Geocoder(this, Locale.getDefault());
         try {
             List<Address> addresses = geocoder.getFromLocation(lat, lon, 1);
-            if (addresses != null && !addresses.isEmpty()) {
-                String cityName = addresses.get(0).getLocality();
-                if (cityName == null) cityName = addresses.get(0).getAdminArea();
-                tvCity.setText(cityName != null ? cityName : "TP. Hồ Chí Minh");
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-            tvCity.setText("Unknown Location");
-        }
+            if (!addresses.isEmpty()) tvCity.setText(addresses.get(0).getLocality());
+        } catch (IOException ignored) {}
     }
 
     private void fetchWeatherData(double lat, double lon) {
-        if (API_KEY == null || API_KEY.isEmpty()) return;
-
-        WeatherApiService apiService = RetrofitClient.getApiService();
+        WeatherApiService api = RetrofitClient.getApiService();
+        // Lấy đơn vị từ Prefs để gửi lên Server
         String units = Prefs.getUnits(this);
-        apiService.getFullWeather(lat, lon, "minutely", API_KEY, units)
-                .enqueue(new Callback<WeatherResponse>() {
-                    @Override
-                    public void onResponse(Call<WeatherResponse> call, Response<WeatherResponse> response) {
-                        if (response.isSuccessful() && response.body() != null) {
-                            updateUI(response.body());
-                        }
-                    }
-
-                    @Override
-                    public void onFailure(Call<WeatherResponse> call, Throwable t) {
-                        Toast.makeText(MainActivity.this, "Lỗi kết nối API", Toast.LENGTH_SHORT).show();
-                    }
-                });
+        api.getFullWeather(lat, lon, "minutely", API_KEY, units).enqueue(new Callback<WeatherResponse>() {
+            @Override
+            public void onResponse(Call<WeatherResponse> call, Response<WeatherResponse> response) {
+                if (response.isSuccessful() && response.body() != null) updateUI(response.body());
+            }
+            @Override public void onFailure(Call<WeatherResponse> call, Throwable t) {}
+        });
     }
 
     private void updateUI(WeatherResponse weather) {
         CurrentWeather current = weather.getCurrent();
-
         String units = Prefs.getUnits(this);
-        boolean imperial = Prefs.UNITS_IMPERIAL.equals(units);
+        String symbol = units.equals("imperial") ? "°F" : "°C";
 
-        tvTemperature.setText(Math.round(current.getTemp()) + (imperial ? "°F" : "°C"));
+        tvTemperature.setText(Math.round(current.getTemp()) + symbol);
         tvCondition.setText(current.getWeather().get(0).getMainStatus());
-
-        tvStatHumidityTitle.setText("HUMIDITY");
         tvStatHumidityValue.setText(current.getHumidity() + "%");
-        ivStatHumidity.setImageResource(R.drawable.ic_humidity);
+        tvStatFeelsValue.setText(Math.round(current.getFeelsLike()) + symbol);
 
-        tvStatWindTitle.setText("WIND");
-        if (imperial) {
-            tvStatWindValue.setText(Math.round(current.getWindSpeed()) + " mph");
-        } else {
-            double windKmh = current.getWindSpeed() * 3.6;
-            tvStatWindValue.setText(Math.round(windKmh) + " km/h");
-        }
-        ivStatWind.setImageResource(R.drawable.ic_wind);
+        double wind = units.equals("imperial") ? current.getWindSpeed() : current.getWindSpeed() * 3.6;
+        tvStatWindValue.setText(Math.round(wind) + (units.equals("imperial") ? " mph" : " km/h"));
 
-        tvStatFeelsTitle.setText("FEELS LIKE");
-        tvStatFeelsValue.setText(Math.round(current.getFeelsLike()) + (imperial ? "°F" : "°C"));
-        ivStatFeels.setImageResource(R.drawable.ic_temperature);
-
-        String unitSymbol = imperial ? "°F" : "°C";
-        rvHourly.setAdapter(new HourlyAdapter(weather.getHourlyForecast(), unitSymbol));
-        rvDaily.setAdapter(new DailyAdapter(weather.getDailyForecast(), unitSymbol));
+        rvHourly.setAdapter(new HourlyAdapter(weather.getHourlyForecast(), symbol));
+        rvDaily.setAdapter(new DailyAdapter(weather.getDailyForecast(), symbol));
 
         checkAndSendWeatherAlert(current);
     }
 
     private void checkAndSendWeatherAlert(CurrentWeather current) {
         String units = Prefs.getUnits(this);
-        boolean imperial = Prefs.UNITS_IMPERIAL.equals(units);
-
-        double tempValue = current.getTemp();
-        double tempC = imperial ? (tempValue - 32.0) * 5.0 / 9.0 : tempValue;
-        String mainCondition = current.getWeather().get(0).getMainStatus().toLowerCase();
-        String description = current.getWeather().get(0).getDescription().toLowerCase();
-
-        String tempLabel = Math.round(tempValue) + (imperial ? "°F" : "°C");
+        boolean imperial = units.equals("imperial");
+        double tempC = imperial ? (current.getTemp() - 32.0) * 5.0 / 9.0 : current.getTemp();
+        String main = current.getWeather().get(0).getMainStatus().toLowerCase();
 
         if (tempC > 35) {
-            showWeatherNotification("⚠️ Cảnh báo nóng bức!",
-                "Nhiệt độ hiện tại: " + tempLabel + ".\nHãy ở trong nhà và uống nhiều nước!");
+            NotificationUtils.notifyWeatherAlert(this, "⚠️ Cảnh báo nóng!", "Nhiệt độ rất cao, hãy uống đủ nước.", NOTIFICATION_ID);
         } else if (tempC < 12) {
-            showWeatherNotification("❄️ Cảnh báo trời lạnh!",
-                "Nhiệt độ hiện tại: " + tempLabel + ".\nNhớ mặc ấm khi ra ngoài!");
-        } else if (mainCondition.contains("rain") || mainCondition.contains("thunderstorm") ||
-                mainCondition.contains("storm") || mainCondition.contains("snow") ||
-                description.contains("heavy rain") || description.contains("shower") ||
-                description.contains("thunder")) {
-            showWeatherNotification("🌧️ Thời tiết xấu!",
-                    "Hiện đang có " + current.getWeather().get(0).getDescription() +
-                            ".\nHãy cẩn thận khi di chuyển và mang theo ô!");
+            NotificationUtils.notifyWeatherAlert(this, "❄️ Cảnh báo lạnh!", "Trời đang khá lạnh, hãy mặc ấm.", NOTIFICATION_ID);
+        } else if (main.contains("rain") || main.contains("storm")) {
+            NotificationUtils.notifyWeatherAlert(this, "🌧️ Thời tiết xấu!", "Có thể có mưa, hãy mang theo ô.", NOTIFICATION_ID);
         }
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
+    private void setupNavigation() {
         bottomNav.setSelectedItemId(R.id.nav_home);
-
-        // Refresh UI when user changes units in Settings
-        fetchWeatherData(currentLat, currentLon);
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-
-        if (requestCode == NOTIFICATION_PERMISSION_REQUEST_CODE) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Đã cấp quyền thông báo", Toast.LENGTH_SHORT).show();
+        bottomNav.setOnItemSelectedListener(item -> {
+            int id = item.getItemId();
+            if (id == R.id.nav_map) {
+                Intent intent = new Intent(this, MapActivity.class);
+                intent.putExtra("lat", currentLat); intent.putExtra("lon", currentLon);
+                startActivity(intent);
+                return true;
+            } else if (id == R.id.nav_settings) {
+                startActivity(new Intent(this, SettingsActivity.class));
+                return true;
             }
-        } else if (requestCode == LOCATION_PERMISSION_REQUEST_CODE) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                getCurrentLocation();
-            } else {
-                fetchWeatherData(currentLat, currentLon);
-            }
-        }
+            return id == R.id.nav_home;
+        });
     }
 }
